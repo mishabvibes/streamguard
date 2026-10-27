@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from datetime import datetime
 
 from gi.repository import GLib
@@ -27,6 +28,7 @@ log = logging.getLogger(__name__)
 TICK_S = 2
 PROBE_S = 15
 SLOW_S = 10
+HISTORY = 90  # samples kept for sparklines (3 minutes at TICK_S)
 
 
 def fmt_bps(bps):
@@ -81,6 +83,8 @@ class Engine:
         self._prev_outputs = {}
         self._prev_stats = {}
         self.on_level_update = None   # GUI hook: called ~10x/s with fresh levels
+        self.history = {k: deque(maxlen=HISTORY) for k in ("tx", "drop", "peak", "cpu", "gpu")}
+        self.out_history = {}         # output name -> deque of kb/s
         self.running = False
 
     def _make_detectors(self):
@@ -253,6 +257,7 @@ class Engine:
         self._net_alerts()
         self._system_alerts()
         self._obs_alerts()
+        self._record_history()
         if self.live:
             self._record_sample()
         self._changed()
@@ -273,6 +278,23 @@ class Engine:
                 _, host, port = INGESTS[key]
                 self.prober.probe(key, host, port)
         return True
+
+    def _record_history(self):
+        h, v = self.history, self.values
+        h["tx"].append((self.net.tx_bps or 0) / 1e6)
+        drops = [o.drop_pct for o in self.obs.outputs.values() if o.active and o.drop_pct is not None]
+        h["drop"].append(max(drops) if drops else 0.0)
+        h["peak"].append(self.recent_peak() if self.recent_peak() is not None else -60.0)
+        h["cpu"].append(v.get("cpu_temp") or 0)
+        h["gpu"].append(self.gpu.temp or 0)
+        for name, o in self.obs.outputs.items():
+            dq = self.out_history.setdefault(name, deque(maxlen=HISTORY))
+            dq.append((o.kbps or 0) / 1000 if o.active else 0.0)
+        for gone in set(self.out_history) - set(self.obs.outputs):
+            del self.out_history[gone]
+
+    def current_drop(self):
+        return self.history["drop"][-1] if self.history["drop"] else None
 
     def _net_alerts(self):
         n = self.net

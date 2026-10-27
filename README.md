@@ -8,7 +8,7 @@ Linux. Before the show it tells you what's wrong. During the show it watches
 your audio, capture devices, network, OBS outputs and laptop, and alerts you
 (and your phone) the moment something breaks.
 
-<p align="center"><img src="docs/screenshot.png" width="760" alt="Stream Guard dashboard: ready check, audio meter, OBS outputs, network and system tiles"></p>
+<p align="center"><img src="docs/screenshot.png" width="820" alt="Stream Guard on air: live timer, alerts, KPI sparklines for upload, dropped frames, audio, CPU and GPU, and per-output bitrate graphs"></p>
 
 **Nothing runs in the background.** There is no service and no autostart.
 Stream Guard only does anything while its window is open, and it installs per
