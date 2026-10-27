@@ -139,6 +139,11 @@ class Snapshot:
     video_present: list = field(default_factory=list)
     cpu_temp: float = None
     gpu_temp: float = None
+    links_healthy: int = None      # links with working internet
+    failover: bool = False
+    planned_mbps: float = None     # OBS main stream bitrate
+    safe_mbps: float = None        # 70 % of best measured upload
+    obs_reconnect: bool = None
 
 
 def checklist(s, ingest_names):
@@ -174,6 +179,18 @@ def checklist(s, ingest_names):
                 + ("" if st == OK else " — use Ethernet if you can"))
     else:
         add("Network", "Connection", WARN, s.net_kind)
+    if s.failover and s.links_healthy is not None:
+        add("Network", "Backup connection",
+            OK if s.links_healthy >= 2 else WARN,
+            f"{s.links_healthy} connections online" if s.links_healthy >= 2 else
+            "only one connection — plug in Ethernet or phone USB tethering as a backup")
+    if s.planned_mbps:
+        if s.safe_mbps is None:
+            add("Network", "Upload capacity", NA, f"run a speed test ({s.planned_mbps:.1f} Mb/s planned)")
+        else:
+            add("Network", "Upload capacity", OK if s.planned_mbps <= s.safe_mbps else WARN,
+                f"{s.planned_mbps:.1f} of {s.safe_mbps:.1f} Mb/s safe" +
+                ("" if s.planned_mbps <= s.safe_mbps else " — lower the bitrate"))
     for key, name in ingest_names.items():
         ms = s.ingest_ms.get(key, "pending")
         if ms == "pending":
@@ -189,6 +206,9 @@ def checklist(s, ingest_names):
            "disabled": (WARN, "enable OBS → Tools → WebSocket Server Settings")}
     st, detail = obs.get(s.obs_state, (NA, "unknown"))
     add("OBS", "OBS link", st, detail)
+    if s.obs_reconnect is False:
+        add("OBS", "Auto-reconnect", WARN,
+            "off — turn on in Settings → Advanced so OBS survives a network switch")
     if s.recording_free_gb is not None:
         gb = s.recording_free_gb
         add("OBS", "Recording space", OK if gb >= 20 else WARN if gb >= 5 else FAIL,

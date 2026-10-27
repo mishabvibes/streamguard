@@ -20,7 +20,7 @@ user without root.
 |---|---|---|
 | **Audio** | your console/interface is connected, has signal, isn't clipping, PipeWire runs at 48 kHz | **silence for 8 s** (muted channel, pulled cable, console off), clipping, console unplugged |
 | **Video** | every capture card you marked is connected; shows its best mode (e.g. 1920×1080 @ 60) | capture card unplugged or lost power |
-| **Network** | Ethernet vs Wi-Fi, Wi-Fi signal, reachability and latency of YouTube / Facebook / Twitch / Instagram ingest servers | network down, switched to Wi-Fi/tether, weak signal, platform unreachable |
+| **Network** | every connection's health, speed test and safe bitrate vs. your OBS bitrate, backup connection present, reachability and latency of YouTube / Facebook / Twitch / Instagram ingest servers | a connection lost internet, automatic switch to a backup, weak Wi-Fi, platform unreachable, platform on the wrong connection |
 | **OBS** | WebSocket link works, recording disk space | every output (main stream, multistream plugin targets, SRT, recording): bitrate, **dropped frames**, congestion, reconnecting, **stream stopped**, OBS render lag, encoder overload, OBS closed |
 | **Laptop** | on charger, CPU/GPU temperature | charger unplugged, overheating, recording disk almost full |
 
@@ -33,6 +33,33 @@ puts everything back, and saves a report to
 `~/Documents/StreamGuard/` (Markdown plus JSON): duration, data sent and
 average/peak bitrate per output, max temperatures, weakest Wi-Fi signal, and
 every alert with its time and how long it lasted.
+
+### Multiple connections
+
+Plug in Ethernet, keep Wi-Fi on, and turn on USB tethering on your phone:
+Stream Guard watches every connection separately, checking each one through
+itself only (`SO_BINDTODEVICE`), and shows its latency.
+
+- **Speed test per connection:** real upload and download through that link
+  only (Cloudflare; up to 30 MB). It tells you the **safe bitrate** (70 % of
+  the best upload) and warns if the OBS bitrate is higher.
+- **Automatic failover (while live):** if the main connection loses internet
+  three checks in a row, Stream Guard makes a working connection the main one
+  (wired first, then the fastest). OBS's auto-reconnect then carries on through
+  it, typically within 5–10 s, instead of the stream dying.
+- **Split platforms across connections:** send each platform through its own
+  link, for example YouTube over Ethernet and Facebook over the phone. Each
+  link only carries part of the load, so a multistream fits where one link
+  alone would choke. Stream Guard also checks which link OBS really uses and
+  warns if a platform is on the wrong one.
+
+All of this runs as you, through NetworkManager, without sudo. It only changes
+the *running* network config while you're live, never your saved settings,
+and `END STREAM` (or closing the app) undoes it.
+
+> These features don't merge connections into one faster pipe. A single RTMP
+> stream always travels over one connection. True bonding (BELABOX/SRTLA style)
+> needs a relay server on the internet, and isn't part of Stream Guard.
 
 ### Alerts
 

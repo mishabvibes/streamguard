@@ -31,6 +31,8 @@ DEFAULTS = {
     "control_obs": True,           # GO LIVE / END STREAM also start/stop OBS
     "record_when_live": False,     # also start a local backup recording
     "follow_obs": True,            # starting the stream in OBS starts a session here
+    "failover": True,              # while live, move the default route off a dead link
+    "link_assign": {},             # platform key -> interface (e.g. "youtube": "enp2s0")
     "obs_port": None,              # None = read from OBS config
     "obs_password": None,
 }

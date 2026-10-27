@@ -18,10 +18,11 @@ from . import alerts as A
 from .alerts import Alerts
 from .config import INGESTS
 from .devices import DeviceWatcher, LevelMeter
-from .obs import OBSClient, is_stream, recording_path
+from .links import LinkManager, link_for_ip, obs_connections, resolve_ipv4, safe_bitrate_mbps
+from .obs import OBSClient, auto_reconnect, is_stream, planned_bitrate_kbps, recording_path
 from .rules import ClipDetector, SilenceDetector, Snapshot, checklist
 from .system import (CpuLoad, Gpu, IngestProber, Lpowerd, Network, SleepInhibitor, cpu_temp,
-                     disk_free_gb, power_state, sample_rate)
+                     disk_free_gb, iface_kind, power_state, sample_rate)
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +72,8 @@ class Engine:
         self.obs = OBSClient(self._changed, self._on_obs_event,
                              config["obs_port"], config["obs_password"])
         self.lpowerd = Lpowerd()
+        self.links = LinkManager(iface_kind, self._changed, self._link_event)
+        self.platform_dev = {}        # platform key -> interface OBS actually uses
         self.inhibitor = SleepInhibitor()
         self._make_detectors()
         self.peak = [-120.0, -120.0]
@@ -100,6 +103,7 @@ class Engine:
         self.devices.start()
         self.gpu.start()
         self.obs.start()
+        self.links.start()
         self._tick()
         self._slow()
         self._probe()
@@ -116,6 +120,8 @@ class Engine:
         self.meter.stop()
         self.gpu.stop()
         self.obs.stop()
+        self.links.stop()
+        self.links.restore()
         self.devices.stop()
         self.running = False
 
@@ -275,7 +281,54 @@ class Engine:
         path = recording_path()
         v["rec_path"] = path
         v["rec_free_gb"] = disk_free_gb(path) if path else None
+        kbps = planned_bitrate_kbps()
+        v["planned_mbps"] = kbps / 1000 if kbps else None
+        v["obs_reconnect"] = auto_reconnect()
+        if self.live:
+            self._apply_split()
+            self._verify_split()
         return True
+
+    # ---------------------------------------------------------------- links
+    def _link_event(self, severity, title, body):
+        sev = {"critical": A.CRITICAL, "warn": A.WARN}.get(severity, A.INFO)
+        key = "link:" + title
+        self.alerts.raise_(key, sev, title, body)
+        once(90 if sev != A.CRITICAL else 300, lambda: self.alerts.clear(key))
+
+    def _apply_split(self):
+        assign = {k: d for k, d in self.config["link_assign"].items()
+                  if d and k in INGESTS and k in self.config["ingests"]}
+        if assign:
+            self.links.apply_split(assign, lambda k: resolve_ipv4(INGESTS[k][1]))
+
+    def _verify_split(self):
+        """Which link is OBS really using for each platform it is connected to?"""
+        conns = obs_connections()
+        self.platform_dev = {}
+        for key in self.config["ingests"]:
+            if key not in INGESTS:
+                continue
+            ips = set(resolve_ipv4(INGESTS[key][1]))
+            for routes in self.links.split_routes.values():
+                ips |= {r.split("/")[0] for r in routes}
+            for remote, _local in conns:
+                if remote in ips:
+                    self.platform_dev[key] = link_for_ip(remote)
+                    break
+        for key, want in self.config["link_assign"].items():
+            have = self.platform_dev.get(key)
+            name = INGESTS.get(key, (key,))[0]
+            akey = f"split:{key}"
+            if want and have and have != want and want in self.links.links:
+                self.alerts.raise_(akey, A.WARN, f"{name} isn't using its assigned link",
+                                   f"Going through {have}, not {want}. Restart the "
+                                   f"{name} output in OBS to reconnect.")
+            else:
+                self.alerts.clear(akey)
+
+    def speed_test(self, dev, done=None):
+        self.links.speed_test(dev, done)
 
     def _probe(self):
         for key in self.config["ingests"]:
@@ -365,6 +418,12 @@ class Engine:
         s.video_expected = list(self.config["video_devices"])
         s.video_present = self.devices.names("video")
         s.cpu_temp, s.gpu_temp = v.get("cpu_temp"), self.gpu.temp
+        links = list(self.links.links.values())
+        s.links_healthy = sum(1 for l in links if l.healthy) if links else None
+        s.failover = self.config["failover"]
+        s.planned_mbps = v.get("planned_mbps")
+        s.safe_mbps = safe_bitrate_mbps(links)
+        s.obs_reconnect = v.get("obs_reconnect")
         return s
 
     def checks(self):
@@ -394,6 +453,8 @@ class Engine:
                 self.lpowerd.set_profile("performance")
         self._prev_outputs = {n: o.active for n, o in self.obs.outputs.items()}
         self._prev_net_kind = self.net.kind
+        self.links.failover_enabled = self.config["failover"]
+        self._apply_split()
         # Alert right away about pinned devices that are already missing.
         for kind, name in (("audio", self.config["audio_device"]),
                            *(("video", n) for n in self.config["video_devices"])):
@@ -417,6 +478,9 @@ class Engine:
         self.live = None
         self.alerts.muted = True
         self.inhibitor.release()
+        self.links.failover_enabled = False
+        self.links.restore()
+        self.platform_dev = {}
         if s.prev_profile:
             self.lpowerd.set_profile(s.prev_profile)
         path = write_report(s, self.alerts.history, self.config)

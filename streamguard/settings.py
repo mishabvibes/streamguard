@@ -131,6 +131,28 @@ class SettingsDialog(Adw.PreferencesDialog):
         for r in (self.control_obs, self.record, self.follow):
             g.add(r)
         page.add(g)
+        g = Adw.PreferencesGroup(
+            title="Multiple connections",
+            description="Only while live, and only for the running session: nothing is saved "
+                        "to your network settings and all of it is undone when you end.")
+        self.failover = Adw.SwitchRow(
+            title="Automatic failover",
+            subtitle="If the main connection loses internet, switch to a working one",
+            active=self.cfg["failover"])
+        g.add(self.failover)
+        links = self.engine.links.links
+        self.link_devs = [None] + sorted(set(links) | {d for d in self.cfg["link_assign"].values() if d})
+        names = ["Automatic (main connection)"] + [
+            f"{links[d].label} ({d})" if d in links else f"{d} (not connected)"
+            for d in self.link_devs[1:]]
+        self.assign_rows = {}
+        for key, (name, _h, _p) in INGESTS.items():
+            r = Adw.ComboRow(title=f"Send {name} through", model=Gtk.StringList.new(names))
+            cur = self.cfg["link_assign"].get(key)
+            r.set_selected(self.link_devs.index(cur) if cur in self.link_devs else 0)
+            self.assign_rows[key] = r
+            g.add(r)
+        page.add(g)
         g = Adw.PreferencesGroup(title="While live")
         have_lp = self.engine.values.get("profile") is not None
         self.perf = Adw.SwitchRow(
@@ -165,6 +187,9 @@ class SettingsDialog(Adw.PreferencesDialog):
             control_obs=self.control_obs.get_active(),
             record_when_live=self.record.get_active(),
             follow_obs=self.follow.get_active(),
+            failover=self.failover.get_active(),
+            link_assign={k: self.link_devs[r.get_selected()] for k, r in self.assign_rows.items()
+                         if r.get_selected() > 0},
             obs_password=self.obs_pw.get_text() or None,
         )
 

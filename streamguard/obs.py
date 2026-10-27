@@ -72,6 +72,52 @@ def recording_path():
     return path or os.path.expanduser("~/Videos")
 
 
+def _profile():
+    """(profile_dir, basic.ini parser) of the active OBS profile, or (None, None)."""
+    d = obs_dir()
+    if not d:
+        return None, None
+    g = configparser.ConfigParser(strict=False, interpolation=None)
+    g.read(os.path.join(d, "user.ini"))
+    g.read(os.path.join(d, "global.ini"))
+    prof = g.get("Basic", "ProfileDir", fallback=None)
+    if not prof:
+        return None, None
+    pdir = os.path.join(d, "basic/profiles", prof)
+    b = configparser.ConfigParser(strict=False, interpolation=None)
+    b.read(os.path.join(pdir, "basic.ini"))
+    return pdir, b
+
+
+def planned_bitrate_kbps():
+    """Video + audio bitrate of the main stream as configured in OBS."""
+    pdir, b = _profile()
+    if b is None:
+        return None
+    try:
+        if b.get("Output", "Mode", fallback="Simple") == "Advanced":
+            try:
+                with open(os.path.join(pdir, "streamEncoder.json")) as f:
+                    video = int(json.load(f).get("bitrate", 2500))
+            except (OSError, ValueError):
+                video = 2500
+            audio = b.getint("AdvOut", "Track1Bitrate", fallback=160)
+        else:
+            video = b.getint("SimpleOutput", "VBitrate", fallback=2500)
+            audio = b.getint("SimpleOutput", "ABitrate", fallback=160)
+    except ValueError:
+        return None
+    return video + audio
+
+
+def auto_reconnect():
+    """OBS 'Automatically reconnect' (on by default). Failover relies on it."""
+    _, b = _profile()
+    if b is None:
+        return None
+    return b.get("Output", "Reconnect", fallback="true").lower() == "true"
+
+
 def auth_string(password, salt, challenge):
     secret = base64.b64encode(hashlib.sha256((password + salt).encode()).digest()).decode()
     return base64.b64encode(hashlib.sha256((secret + challenge).encode()).digest()).decode()

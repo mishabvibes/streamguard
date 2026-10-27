@@ -19,6 +19,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 from . import APP_ID, __version__  # noqa: E402
 from .config import INGESTS, Config  # noqa: E402
 from .engine import Engine, output_label  # noqa: E402
+from .links import safe_bitrate_mbps  # noqa: E402
 from .obs import is_stream  # noqa: E402
 from .rules import FAIL, NA, OK, WARN  # noqa: E402
 from .settings import SettingsDialog  # noqa: E402
@@ -565,27 +566,80 @@ class Window(Adw.ApplicationWindow):
 
     def _refresh_net(self):
         e, card = self.engine, self.net_card
-        n = e.net
-        ingests = [(INGESTS[k][0], e.prober.results.get(k, "…")) for k in e.config["ingests"]
+        links = sorted(e.links.links.values(), key=lambda l: l.metric)
+        ingests = [(k, INGESTS[k][0], e.prober.results.get(k, "…")) for k in e.config["ingests"]
                    if k in INGESTS]
-        key = (n.kind, n.dbm, n.link_mbps, ingests)
+        planned = e.values.get("planned_mbps")
+        key = ([(l.dev, l.metric, l.healthy, round(l.rtt_ms or 0, -1), l.up_mbps, l.down_mbps,
+                 l.testing, tuple(l.platforms)) for l in links], ingests, planned,
+               dict(e.platform_dev), bool(e.links.promoted), e.net.dbm)
         if not self._changed("net", key):
             return
         clear(card.badge)
         clear(card.content)
         c = card.content
-        if n.kind is None:
+        online = [l for l in links if l.healthy]
+        if not links:
             card.badge.append(pill("OFFLINE", FAIL))
+        elif e.links.promoted:
+            card.badge.append(pill("ON BACKUP", WARN))
         else:
-            kind = {"wifi": "WI-FI", "ethernet": "ETHERNET", "usb-tether": "USB TETHER"}[n.kind]
-            good = n.kind == "ethernet" or (n.dbm or -100) >= -60
-            card.badge.append(pill(kind + (f" · {n.dbm:.0f} dBm" if n.dbm is not None else ""),
-                                   OK if good else WARN))
-        if n.kind == "wifi":
-            c.append(label("Use Ethernet for events if you can: Wi-Fi drops are the most "
-                           "common cause of a frozen stream.", "row-sub", wrap=True,
-                           max_width_chars=80))
-        for name, ms in ingests:
+            card.badge.append(pill(f"{len(online)} LINK{'S' if len(online) != 1 else ''} ONLINE",
+                                   OK if len(online) >= 2 else WARN))
+
+        for i, l in enumerate(links):
+            if i:
+                c.append(Gtk.Box(css_classes=["divider"]))
+            row = Gtk.Box(spacing=12)
+            icon = {"ethernet": "network-wired-symbolic", "wifi": "network-wireless-symbolic",
+                    "usb-tether": "phone-symbolic"}.get(l.kind, "network-workgroup-symbolic")
+            row.append(Gtk.Image(icon_name=icon, pixel_size=20, css_classes=["tile-icon"],
+                                 valign=Gtk.Align.CENTER))
+            txt = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+            top = Gtk.Box(spacing=8)
+            top.append(label(l.label, "row-name"))
+            top.append(pill("PRIMARY" if i == 0 else "BACKUP", "live" if i == 0 else NA))
+            if l.healthy is False:
+                top.append(pill("NO INTERNET", FAIL))
+            for k in l.platforms:
+                ok = e.platform_dev.get(k) in (None, l.dev)
+                top.append(pill(INGESTS[k][0].upper() + ("" if ok else " ✗"), OK if ok else WARN))
+            txt.append(top)
+            parts = [l.dev]
+            if l.kind == "wifi" and e.net.iface == l.dev and e.net.dbm is not None:
+                parts.append(f"{e.net.dbm:.0f} dBm")
+            if l.rtt_ms is not None:
+                parts.append(f"{l.rtt_ms:.0f} ms")
+            if l.up_mbps is not None:
+                parts.append(f"↑ {l.up_mbps:.1f} ↓ {l.down_mbps or 0:.0f} Mb/s")
+            txt.append(label(" · ".join(parts), "row-sub"))
+            row.append(txt)
+            btn = Gtk.Button(label="Testing…" if l.testing else "Speed test",
+                             css_classes=["pill-btn", "neutral"], valign=Gtk.Align.CENTER,
+                             sensitive=not l.testing and l.healthy is not False,
+                             tooltip_text="Uploads up to 30 MB and downloads for 7 s "
+                                          "through this connection only")
+            btn.connect("clicked", lambda _b, d=l.dev: self._speed_test(d))
+            row.append(btn)
+            c.append(row)
+
+        safe = safe_bitrate_mbps(links)
+        if planned or safe:
+            st = NA if safe is None else OK if (planned or 0) <= safe else WARN
+            msg = (f"OBS stream {planned:.1f} Mb/s" if planned else "") + (
+                f" · safe up to {safe:.1f} Mb/s" if safe else " · run a speed test")
+            adv = Gtk.Box(spacing=8)
+            adv.append(dot(st))
+            adv.append(label(msg.strip(" ·"), "row-sub", wrap=True, max_width_chars=70))
+            c.append(adv)
+        if len(online) < 2:
+            c.append(label("Tip: plug in Ethernet or turn on USB tethering on your phone. "
+                           "With two connections Stream Guard can fail over automatically "
+                           "or send each platform through its own link.", "row-sub",
+                           wrap=True, max_width_chars=80))
+
+        c.append(label("INGEST SERVERS", "group-title"))
+        for k, name, ms in ingests:
             row = Gtk.Box(spacing=12)
             row.append(label(name, "row-name", width_chars=10))
             bar = Gtk.ProgressBar(css_classes=["lat"], hexpand=True, valign=Gtk.Align.CENTER)
@@ -601,6 +655,14 @@ class Window(Adw.ApplicationWindow):
             row.append(bar)
             row.append(label(val, "num", xalign=1.0, width_chars=11))
             c.append(row)
+
+    def _speed_test(self, dev):
+        def done(d, up, down):
+            if up is None:
+                self.toast(f"Speed test on {d} failed")
+            else:
+                self.toast(f"{d}: upload {up:.1f} Mb/s, download {down or 0:.0f} Mb/s")
+        self.engine.speed_test(dev, done)
 
     def _refresh_devices(self):
         e, card = self.engine, self.dev_card

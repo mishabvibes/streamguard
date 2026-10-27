@@ -12,6 +12,7 @@ from streamguard.config import Config  # noqa: E402
 from streamguard.obs import Output, auth_string, is_stream  # noqa: E402
 from streamguard.rules import FAIL, NA, OK, WARN, Snapshot, checklist, overall  # noqa: E402
 from streamguard.system import default_iface, wifi_dbm  # noqa: E402
+from streamguard import links as L  # noqa: E402
 
 
 class Detectors(unittest.TestCase):
@@ -133,6 +134,84 @@ class Parsing(unittest.TestCase):
             self.assertEqual(c2["audio_device"], "Yamaha MG10XU")
             self.assertNotIn("bogus", c2.data)
             self.assertFalse(c2["alert_sound"])
+
+
+class Links(unittest.TestCase):
+    def link(self, dev, kind, metric, fails=0, healthy=True, up=None, rtt=30):
+        l = L.Link(dev, kind, gateway="10.0.0.1", metric=metric)
+        l.fails, l.healthy, l.up_mbps, l.rtt_ms = fails, healthy, up, rtt
+        return l
+
+    def test_no_failover_while_primary_ok(self):
+        links = [self.link("wlo1", "wifi", 600, fails=2), self.link("enp2s0", "ethernet", 700)]
+        self.assertIsNone(L.choose_failover(links, "wlo1"))
+
+    def test_failover_prefers_wired_then_fastest(self):
+        links = [self.link("wlo1", "wifi", 100, fails=3, healthy=False),
+                 self.link("usb0", "usb-tether", 700, up=40),
+                 self.link("enp2s0", "ethernet", 800, up=5)]
+        self.assertEqual(L.choose_failover(links, "wlo1"), "enp2s0")
+        links[2].healthy = False
+        self.assertEqual(L.choose_failover(links, "wlo1"), "usb0")
+
+    def test_no_failover_without_healthy_backup(self):
+        links = [self.link("wlo1", "wifi", 100, fails=5, healthy=False),
+                 self.link("usb0", "usb-tether", 700, healthy=False)]
+        self.assertIsNone(L.choose_failover(links, "wlo1"))
+
+    def test_safe_bitrate(self):
+        self.assertIsNone(L.safe_bitrate_mbps([self.link("a", "wifi", 1)]))
+        self.assertEqual(L.safe_bitrate_mbps([self.link("a", "wifi", 1, up=10),
+                                              self.link("b", "ethernet", 2, up=20)]), 14.0)
+
+    def test_default_routes_json(self):
+        text = ('[{"dst":"default","gateway":"10.0.0.1","dev":"wlo1","metric":600},'
+                '{"dst":"default","gateway":"192.168.42.129","dev":"usb0","metric":100,'
+                '"prefsrc":"192.168.42.10"}]')
+        r = L.default_routes(text)
+        self.assertEqual([x["dev"] for x in r], ["wlo1", "usb0"])
+        self.assertEqual(r[1]["metric"], 100)
+        self.assertEqual(L.default_routes("garbage"), [])
+
+    def test_split_is_additive_and_restore_reapplies(self):
+        calls = []
+        orig = L.run
+        L.run = lambda cmd, timeout=10: (calls.append(cmd), (0, "[]", ""))[1]
+        try:
+            m = L.LinkManager(lambda d: "ethernet", lambda: None, lambda *a: None)
+            m.links = {"enp2s0": self.link("enp2s0", "ethernet", 100)}
+            m.apply_split({"youtube": "enp2s0"}, lambda k: ["1.1.1.1", "2.2.2.2"])
+            m.apply_split({"youtube": "enp2s0"}, lambda k: ["2.2.2.2", "3.3.3.3"])
+            adds = [c for c in calls if c[:3] == ["nmcli", "device", "modify"]]
+            self.assertEqual(adds[0][4:], ["+ipv4.routes", "1.1.1.1/32 10.0.0.1",
+                                           "+ipv4.routes", "2.2.2.2/32 10.0.0.1"])
+            self.assertEqual(adds[1][4:], ["+ipv4.routes", "3.3.3.3/32 10.0.0.1"])
+            self.assertEqual(len(m.split_routes["enp2s0"]), 3)   # 1.1.1.1 kept
+            self.assertEqual(m.links["enp2s0"].platforms, ["youtube"])
+            m.restore()
+            self.assertIn(["nmcli", "device", "reapply", "enp2s0"], calls)
+            self.assertEqual(m.split_routes, {})
+        finally:
+            L.run = orig
+
+    def test_speed_parse(self):
+        self.assertEqual(L._mbps("200 1250000"), 10.0)
+        self.assertEqual(L._mbps("000 625000.5"), 5.0)   # stopped by --max-time
+        self.assertEqual(L._mbps("100 561674"), 4.5)     # upload cut off mid-body
+        self.assertIsNone(L._mbps("403 7"))
+        self.assertIsNone(L._mbps(""))
+
+    def test_network_checks(self):
+        c = Checklist.snap(self, failover=True, links_healthy=1, planned_mbps=8.2, safe_mbps=6.0,
+                           obs_reconnect=False)
+        st = {x.title: x.status for x in c}
+        self.assertEqual(st["Backup connection"], WARN)
+        self.assertEqual(st["Upload capacity"], WARN)
+        self.assertEqual(st["Auto-reconnect"], WARN)
+        c = Checklist.snap(self, failover=True, links_healthy=2, planned_mbps=6, safe_mbps=14)
+        st = {x.title: x.status for x in c}
+        self.assertEqual(st["Backup connection"], OK)
+        self.assertEqual(st["Upload capacity"], OK)
 
 
 if __name__ == "__main__":
