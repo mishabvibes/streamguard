@@ -201,11 +201,16 @@ class OBSClient:
         if self.conn is not None:
             self.conn.send_text(json.dumps({"op": op, "d": d}))
 
-    def request(self, rtype, data=None, cb=None):
+    def request(self, rtype, data=None, cb=None, err=None):
+        """Send a request; `cb(responseData)` on success, `err(message)` on failure."""
+        if self.state != "connected":
+            if err:
+                err("OBS is not connected")
+            return
         self._next_id += 1
         rid = str(self._next_id)
-        if cb:
-            self._pending[rid] = cb
+        if cb or err:
+            self._pending[rid] = (cb, err)
         d = {"requestType": rtype, "requestId": rid}
         if data:
             d["requestData"] = data
@@ -236,9 +241,14 @@ class OBSClient:
         elif op == 5:  # Event
             self._on_obs_event(d.get("eventType"), d.get("eventData") or {})
         elif op == 7:  # RequestResponse
-            cb = self._pending.pop(d.get("requestId"), None)
-            if cb and d.get("requestStatus", {}).get("result"):
-                cb(d.get("responseData") or {})
+            cb, err = self._pending.pop(d.get("requestId"), (None, None))
+            status = d.get("requestStatus", {})
+            if status.get("result"):
+                if cb:
+                    cb(d.get("responseData") or {})
+            elif err:
+                err(status.get("comment") or f"OBS refused {d.get('requestType')} "
+                    f"(code {status.get('code')})")
 
     def _on_obs_event(self, etype, data):
         if etype == "StreamStateChanged":
@@ -246,6 +256,19 @@ class OBSClient:
         elif etype == "RecordStateChanged":
             self.recording = bool(data.get("outputActive"))
         self.on_event(etype, data)
+
+    # ------------------------------------------------------------ control
+    def start_stream(self, cb=None, err=None):
+        self.request("StartStream", cb=cb, err=err)
+
+    def stop_stream(self, cb=None, err=None):
+        self.request("StopStream", cb=cb, err=err)
+
+    def start_record(self, cb=None, err=None):
+        self.request("StartRecord", cb=cb, err=err)
+
+    def stop_record(self, cb=None, err=None):
+        self.request("StopRecord", cb=cb, err=err)
 
     # --------------------------------------------------------------- poll
     def _poll_now(self):

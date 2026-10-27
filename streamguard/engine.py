@@ -49,6 +49,7 @@ class LiveSession:
         self.min_dbm = None
         self.peak_out_kbps = {}
         self.out_bytes = {}
+        self.started_recording = False
 
     @property
     def elapsed(self):
@@ -190,6 +191,10 @@ class Engine:
 
     # ------------------------------------------------------------------ OBS
     def _on_obs_event(self, etype, data):
+        if (etype == "StreamStateChanged" and data.get("outputActive") and not self.live
+                and self.config["follow_obs"]):
+            log.info("stream started in OBS; starting a session")
+            self.go_live()
         if etype in ("StreamStateChanged", "RecordStateChanged"):
             self._changed()
 
@@ -367,6 +372,15 @@ class Engine:
         return checklist(self.snapshot(), names)
 
     # ------------------------------------------------------------ live mode
+    def start_obs(self, on_error=None):
+        """Start the OBS stream (and the backup recording if enabled)."""
+        if not self.obs.streaming:
+            self.obs.start_stream(err=on_error)
+        if self.config["record_when_live"] and not self.obs.recording:
+            self.obs.start_record(err=on_error)
+            if self.live:
+                self.live.started_recording = True
+
     def go_live(self):
         if self.live:
             return
@@ -390,10 +404,16 @@ class Engine:
         log.info("live session started")
         self._changed()
 
-    def end_live(self):
+    def end_live(self, stop_obs=False, on_error=None):
         s = self.live
         if not s:
             return None
+        if stop_obs:
+            # Recording first is not needed; OBS finalises both files cleanly.
+            if self.obs.streaming:
+                self.obs.stop_stream(err=on_error)
+            if s.started_recording and self.obs.recording:
+                self.obs.stop_record(err=on_error)
         self.live = None
         self.alerts.muted = True
         self.inhibitor.release()

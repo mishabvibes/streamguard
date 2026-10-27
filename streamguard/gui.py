@@ -107,6 +107,12 @@ progressbar.lat progress { min-height: 6px; border-radius: 3px; background-color
 progressbar.lat.warn progress { background-color: #fbbf24; }
 progressbar.lat.fail progress { background-color: #ff3b4e; }
 
+button.pill-btn { border-radius: 999px; padding: 4px 14px; font-size: 12px; font-weight: 800;
+  box-shadow: none; }
+button.pill-btn.go { background-color: alpha(#34d399, 0.16); color: #34d399; }
+button.pill-btn.danger { background-color: alpha(#ff3b4e, 0.16); color: #ff6b7a; }
+button.pill-btn.neutral { background-color: alpha(#e8edf4, 0.08); color: #e8edf4; }
+
 /* alerts */
 .alert { border-radius: 14px; padding: 12px 14px; }
 .alert.critical { background-color: alpha(#ff3b4e, 0.12); border: 1px solid alpha(#ff3b4e, 0.55); }
@@ -498,7 +504,7 @@ class Window(Adw.ApplicationWindow):
         o = e.obs
         outs = [x for x in o.outputs.values() if x.active or is_stream(x)]
         st = o.stats
-        key = (o.state, [(x.name, x.active, x.reconnecting, round(x.kbps or 0, -1),
+        key = (o.state, o.streaming, o.recording, [(x.name, x.active, x.reconnecting, round(x.kbps or 0, -1),
                           round(x.drop_pct or 0, 1)) for x in outs],
                round(st.get("activeFps", 0)), round(st.get("cpuUsage", 0)),
                [tuple(e.out_history.get(x.name, ())) for x in outs])
@@ -517,6 +523,16 @@ class Window(Adw.ApplicationWindow):
             return
         card.badge.append(pill(f"{st.get('activeFps', 0):.0f} FPS · CPU {st.get('cpuUsage', 0):.0f}%",
                                OK))
+        ctl = Gtk.Box(spacing=8)
+        sbtn = Gtk.Button(label="Stop stream" if o.streaming else "Start stream",
+                          css_classes=["pill-btn", "danger" if o.streaming else "go"])
+        sbtn.connect("clicked", lambda *_: self._obs_toggle("stream"))
+        rbtn = Gtk.Button(label="Stop recording" if o.recording else "Record",
+                          css_classes=["pill-btn", "danger" if o.recording else "neutral"])
+        rbtn.connect("clicked", lambda *_: self._obs_toggle("record"))
+        ctl.append(sbtn)
+        ctl.append(rbtn)
+        c.append(ctl)
         if not outs:
             c.append(label("No active outputs. Start streaming or recording in OBS.", "row-sub",
                            wrap=True))
@@ -648,14 +664,7 @@ class Window(Adw.ApplicationWindow):
     def _on_live_clicked(self, _btn):
         e = self.engine
         if e.live:
-            dlg = Adw.AlertDialog(heading="End the stream session?",
-                                  body="Stream Guard stops watching and saves a report. "
-                                       "This does not stop OBS.")
-            dlg.add_response("cancel", "Keep watching")
-            dlg.add_response("end", "End session")
-            dlg.set_response_appearance("end", Adw.ResponseAppearance.DESTRUCTIVE)
-            dlg.connect("response", lambda d, r: r == "end" and self._end())
-            dlg.present(self)
+            self._confirm_end()
             return
         fails = [c for c in e.checks() if c.status == FAIL]
         if fails:
@@ -670,11 +679,61 @@ class Window(Adw.ApplicationWindow):
             self._go()
 
     def _go(self):
-        self.engine.go_live()
-        self.toast("You're on air. Stream Guard is watching.")
+        e = self.engine
+        e.go_live()
+        if e.config["control_obs"]:
+            if e.obs.state == "connected":
+                e.start_obs(on_error=self._obs_error)
+                self.toast("Starting the stream in OBS…")
+            else:
+                self.toast("OBS isn't connected: watching only. Start the stream in OBS yourself.")
+        else:
+            self.toast("You're on air. Stream Guard is watching.")
 
-    def _end(self):
-        path = self.engine.end_live()
+    def _obs_error(self, message):
+        dlg = Adw.AlertDialog(heading="OBS couldn't start", body=message +
+                              "\n\nCheck OBS → Help → Log Files for details.")
+        dlg.add_response("ok", "OK")
+        dlg.present(self)
+
+    def _confirm_end(self):
+        e = self.engine
+        can_stop = e.config["control_obs"] and e.obs.state == "connected" and (
+            e.obs.streaming or e.obs.recording)
+        dlg = Adw.AlertDialog(
+            heading="End the stream?",
+            body="This stops the stream in OBS for every platform, ends the session here "
+                 "and saves a report." if can_stop else
+                 "Stream Guard stops watching and saves a report.")
+        dlg.add_response("cancel", "Keep streaming")
+        if can_stop:
+            dlg.add_response("watch", "Only stop watching")
+            dlg.add_response("stop", "End stream")
+            dlg.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        else:
+            dlg.add_response("watch", "End session")
+            dlg.set_response_appearance("watch", Adw.ResponseAppearance.DESTRUCTIVE)
+        dlg.set_close_response("cancel")
+        dlg.connect("response", lambda d, r: r in ("watch", "stop") and self._end(r == "stop"))
+        dlg.present(self)
+
+    def _obs_toggle(self, what):
+        o = self.engine.obs
+        if what == "stream":
+            if o.streaming:
+                if self.engine.live:
+                    self._confirm_end()
+                else:
+                    o.stop_stream(err=self._obs_error)
+            elif self.engine.live:
+                o.start_stream(err=self._obs_error)
+            else:
+                self._on_live_clicked(None)  # runs the ready check, then starts OBS
+        else:
+            (o.stop_record if o.recording else o.start_record)(err=self._obs_error)
+
+    def _end(self, stop_obs=False):
+        path = self.engine.end_live(stop_obs=stop_obs, on_error=self._obs_error)
         if path:
             t = Adw.Toast(title="Report saved", button_label="Open", timeout=8)
             t.connect("button-clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(

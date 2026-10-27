@@ -24,9 +24,12 @@ user without root.
 | **OBS** | WebSocket link works, recording disk space | every output (main stream, multistream plugin targets, SRT, recording): bitrate, **dropped frames**, congestion, reconnecting, **stream stopped**, OBS render lag, encoder overload, OBS closed |
 | **Laptop** | on charger, CPU/GPU temperature | charger unplugged, overheating, recording disk almost full |
 
-**GO LIVE** turns on alerts, blocks sleep and screen lock, and switches the
-laptop to Performance mode if [lpowerd](https://github.com/mishabvibes/lpowerd)
-is installed. **END STREAM** puts everything back and saves a report to
+**GO LIVE** starts the stream in OBS (plus an optional backup recording),
+turns on alerts, blocks sleep and screen lock, and switches the laptop to
+Performance mode if [lpowerd](https://github.com/mishabvibes/lpowerd) is
+installed. Starting the stream from OBS itself starts a session too.
+**END STREAM** asks whether to stop the stream in OBS or only stop watching,
+puts everything back, and saves a report to
 `~/Documents/StreamGuard/` (Markdown plus JSON): duration, data sent and
 average/peak bitrate per output, max temperatures, weakest Wi-Fi signal, and
 every alert with its time and how long it lasted.

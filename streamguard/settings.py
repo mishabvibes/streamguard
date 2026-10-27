@@ -117,6 +117,20 @@ class SettingsDialog(Adw.PreferencesDialog):
             self.ingest_rows[key] = r
             g.add(r)
         page.add(g)
+        g = Adw.PreferencesGroup(title="OBS control")
+        self.control_obs = Adw.SwitchRow(
+            title="GO LIVE starts the stream in OBS",
+            subtitle="END STREAM asks whether to stop it in OBS too",
+            active=self.cfg["control_obs"])
+        self.record = Adw.SwitchRow(title="Also record a local backup",
+                                    subtitle="Started with the stream, stopped with it",
+                                    active=self.cfg["record_when_live"])
+        self.follow = Adw.SwitchRow(title="Follow OBS",
+                                    subtitle="Starting the stream in OBS starts a session here",
+                                    active=self.cfg["follow_obs"])
+        for r in (self.control_obs, self.record, self.follow):
+            g.add(r)
+        page.add(g)
         g = Adw.PreferencesGroup(title="While live")
         have_lp = self.engine.values.get("profile") is not None
         self.perf = Adw.SwitchRow(
@@ -148,6 +162,9 @@ class SettingsDialog(Adw.PreferencesDialog):
             alert_sink=self.sinks[self.sink_row.get_selected()][0],
             ingests=[k for k, r in self.ingest_rows.items() if r.get_active()],
             performance_when_live=self.perf.get_active(),
+            control_obs=self.control_obs.get_active(),
+            record_when_live=self.record.get_active(),
+            follow_obs=self.follow.get_active(),
             obs_password=self.obs_pw.get_text() or None,
         )
 

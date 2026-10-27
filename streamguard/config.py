@@ -28,6 +28,9 @@ DEFAULTS = {
     "alert_sound": False,          # off by default: the sound could leak into the stream
     "alert_sink": None,            # PipeWire/Pulse sink for alert sounds (e.g. headphones)
     "performance_when_live": True, # switch lpowerd to Performance while live
+    "control_obs": True,           # GO LIVE / END STREAM also start/stop OBS
+    "record_when_live": False,     # also start a local backup recording
+    "follow_obs": True,            # starting the stream in OBS starts a session here
     "obs_port": None,              # None = read from OBS config
     "obs_password": None,
 }
