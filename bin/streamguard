@@ -1,0 +1,9 @@
+#!/usr/bin/python3 -I
+import os, sys
+here = os.path.dirname(os.path.realpath(__file__))
+for p in (os.path.join(here, ".."), os.path.expanduser("~/.local/share/streamguard")):
+    if os.path.isfile(os.path.join(p, "streamguard", "__init__.py")):
+        sys.path.insert(0, os.path.abspath(p))
+        break
+from streamguard.gui import main
+sys.exit(main())

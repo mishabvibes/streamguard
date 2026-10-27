@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Stream Guard
+GenericName=Live Stream Monitor
+Comment=Ready-check and on-air alerts for OBS live streams: audio, capture devices, network
+Exec=@BIN@/streamguard
+Icon=camera-video-symbolic
+Terminal=false
+Categories=AudioVideo;Video;Monitor;
+Keywords=obs;stream;live;broadcast;audio;capture;network;alert;
+StartupNotify=true
